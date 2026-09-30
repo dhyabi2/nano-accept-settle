@@ -30,7 +30,13 @@ and the deadline to unix seconds. Two parties who agree on the terms compute the
   pins top-level key types (`string`, `number`, `integer`, `boolean`, `object`, `array`, `null`; a boolean is
   never a number). This is a deliberately small subset of JSON Schema, not a validator.
 - `regex`: Python `re` over the UTF-8 text; `re.search` by default, `re.fullmatch` when `fullmatch` is true.
-  `flags` may contain `i`, `m`, `s`. Pattern at most 512 characters, deliverable at most 1 MB.
+  `flags` may contain `i`, `m`, `s`. Pattern at most 512 characters, deliverable at most 1 MB. `fullmatch`
+  must be `true` or `false`, never a string.
+
+Unknown fields are refused inside `acceptance` too, one shape at a time: `sha256` takes `type` and `sha256`;
+`required_keys` takes `type`, `required` and `types`; `regex` takes `type`, `pattern`, `flags` and
+`fullmatch`. A misspelling is not ignored, because ignoring it would change the test the deal was written
+to run: `full_match` for `fullmatch` turns a whole-string test into a substring search.
 
 ## Receipt (what `accept_and_settle` returns)
 

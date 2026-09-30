@@ -104,6 +104,47 @@ class DealSchema(unittest.TestCase):
         self.assertEqual(deal(amount_raw=str(3 * RAW_PER_XNO)).terms()["amount_xno"], "3")
 
 
+class AcceptanceSpec(unittest.TestCase):
+    """A misspelled acceptance field is refused, not ignored.
+
+    `full_match` for `fullmatch` used to be accepted silently, turning a whole-string test
+    into a substring search: a deal that required digits only then passed on
+    "sorry, no data: 42". It also changes the deal_id, so the two sides would not have been
+    talking about the same deal.
+    """
+
+    JUNK = "sorry, no data: 42"
+
+    def test_the_correctly_spelled_field_still_works(self):
+        self.assertFalse(check_acceptance(deal(), self.JUNK)["passed"])
+        self.assertTrue(check_acceptance(deal(), "42")["passed"])
+        loose = deal(acceptance={"type": "regex", "pattern": r"\d+"})
+        self.assertTrue(check_acceptance(loose, self.JUNK)["passed"])
+
+    def test_a_misspelled_field_is_refused_in_every_shape(self):
+        for bad in ({"type": "regex", "pattern": r"\d+", "full_match": True},
+                    {"type": "regex", "pattern": r"\d+", "flag": "i"},
+                    {"type": "sha256", "sha256": "a" * 64, "algorithm": "sha512"},
+                    {"type": "required_keys", "required": ["a"], "type_s": {"a": "number"}},
+                    {"type": "required_keys", "required": ["a"], "optional": ["b"]}):
+            with self.assertRaises(DealError, msg=bad) as caught:
+                deal(acceptance=bad)
+            self.assertIn("unknown acceptance fields", str(caught.exception))
+
+    def test_fullmatch_must_be_a_boolean(self):
+        # "false" is a true string; reading it for truthiness would apply fullmatch.
+        for value in ("false", "true", 0, 1, None):
+            with self.assertRaises(DealError, msg=value):
+                deal(acceptance={"type": "regex", "pattern": r"\d+", "fullmatch": value})
+        for value in (True, False):
+            deal(acceptance={"type": "regex", "pattern": r"\d+", "fullmatch": value})
+
+    def test_a_bad_type_still_names_the_three_shapes(self):
+        with self.assertRaises(DealError) as caught:
+            deal(acceptance={"type": "eval", "code": "1"})
+        self.assertIn("sha256, required_keys or regex", str(caught.exception))
+
+
 class Payment(unittest.TestCase):
     def setUp(self):
         self.rpc = MockRpc()
