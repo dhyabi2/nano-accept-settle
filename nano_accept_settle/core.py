@@ -47,10 +47,26 @@ def _parse_deadline(value):
     raise DealError("deadline must be ISO 8601 or unix seconds")
 
 
+#: The only keys each acceptance shape may carry. A name outside its shape is refused rather
+#: than ignored: `full_match` for `fullmatch` would otherwise turn a whole-string test into a
+#: substring search without saying so, and it changes the deal_id, so both sides would not
+#: even be talking about the same deal.
+_ACCEPTANCE_FIELDS = {
+    "sha256": {"type", "sha256"},
+    "required_keys": {"type", "required", "types"},
+    "regex": {"type", "pattern", "flags", "fullmatch"},
+}
+
+
 def _check_acceptance_spec(spec):
     if not isinstance(spec, dict):
         raise DealError("acceptance must be an object")
     kind = spec.get("type")
+    if kind not in _ACCEPTANCE_FIELDS:
+        raise DealError("acceptance.type must be sha256, required_keys or regex")
+    unknown = sorted(set(spec) - _ACCEPTANCE_FIELDS[kind])
+    if unknown:
+        raise DealError("unknown acceptance fields for %s: %s" % (kind, ", ".join(unknown)))
     if kind == "sha256":
         if not isinstance(spec.get("sha256"), str) or not _HASH_RE.match(spec["sha256"]):
             raise DealError("acceptance.sha256 must be 64 hex characters")
@@ -69,8 +85,8 @@ def _check_acceptance_spec(spec):
             re.compile(pattern, _flags(spec.get("flags", "")))
         except re.error as e:
             raise DealError("acceptance.pattern does not compile: %s" % e)
-    else:
-        raise DealError("acceptance.type must be sha256, required_keys or regex")
+        if "fullmatch" in spec and not isinstance(spec["fullmatch"], bool):
+            raise DealError("acceptance.fullmatch must be true or false")
 
 
 def _flags(text):
