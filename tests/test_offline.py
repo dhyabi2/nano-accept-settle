@@ -98,6 +98,21 @@ class DealSchema(unittest.TestCase):
         with self.assertRaises(DealError):
             Deal.from_dict(dict(deal().to_dict(), deal_id="0" * 64))
 
+    def test_amount_and_deadline_need_ascii_digits(self):
+        """Unicode digits are not raw. `str.isdigit()` is true for every string below.
+
+        `"\u0663"` (Arabic-Indic three) used to build a deal that can never be paid: the amount read
+        off the ledger is compared as the ASCII string `"3"`, so `verify_payment` always reports a
+        mismatch. `"\u00b2"` used to escape as a bare `ValueError` from `int()`, which a caller
+        following the README and catching `DealError` does not catch.
+        """
+        for bad in ["\u0663", "\u00b2", "\u0663" + "0" * 29]:
+            self.assertTrue(bad.isdigit(), bad)
+            with self.assertRaises(DealError, msg="amount_raw=%r" % bad):
+                deal(amount_raw=bad)
+            with self.assertRaises(DealError, msg="deadline=%r" % bad):
+                deal(deadline=bad)
+
     def test_terms_amount_is_exact(self):
         self.assertEqual(deal().terms()["amount_xno"], "0.01")
         self.assertEqual(deal(amount_raw="1").terms()["amount_xno"], "0." + "0" * 29 + "1")
