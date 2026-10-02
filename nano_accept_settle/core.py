@@ -21,6 +21,11 @@ USER_AGENT = "nano-accept-settle/0.1 (+https://github.com/dhyabi2/nano-accept-se
 MAX_DELIVERABLE_BYTES = 1_000_000
 MAX_PATTERN_CHARS = 512
 _HASH_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
+#: Amounts and unix deadlines are ASCII decimal digits only. `str.isdigit()` is not that test:
+#: it is true for "\u0663" (Arabic-Indic three), which would build a deal whose amount can never
+#: match the ASCII decimal string read off the ledger, and for "\u00b2", which int() then refuses.
+_RAW_RE = re.compile(r"^[1-9][0-9]*$")
+_UNIX_RE = re.compile(r"^[0-9]+$")
 
 
 class DealError(ValueError):
@@ -35,7 +40,7 @@ def _parse_deadline(value):
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        if value.isdigit():
+        if _UNIX_RE.match(value):
             return int(value)
         try:
             dt = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -122,7 +127,7 @@ class Deal:
             raise DealError("bad address: %s" % e)
         if self.asker == self.answerer:
             raise DealError("asker and answerer must differ")
-        if not isinstance(amount_raw, str) or not amount_raw.isdigit() or amount_raw.startswith("0"):
+        if not isinstance(amount_raw, str) or not _RAW_RE.match(amount_raw):
             raise DealError("amount_raw must be a positive integer string of raw (1 XNO = 10**30 raw)")
         if int(amount_raw) >= 1 << 128:
             raise DealError("amount_raw out of range")
