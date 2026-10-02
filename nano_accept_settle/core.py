@@ -139,11 +139,16 @@ class Deal:
             raise DealError("what_it_buys must be a string")
         self.what_it_buys = what_it_buys
 
+    #: Fields `terms()` adds for the payer, accepted back on input so a 402 body round-trips.
+    #: None of them is part of the deal: `deal_id` and `pay_to` are checked against the terms,
+    #: and `amount_xno` is ignored (SCHEMA.md - `amount_raw` is the only amount that counts).
+    DERIVED = ("deal_id", "amount_xno", "pay_to")
+
     @classmethod
     def from_dict(cls, d):
         if not isinstance(d, dict):
             raise DealError("deal must be an object")
-        unknown = set(d) - set(cls.FIELDS) - {"deal_id", "amount_xno"}
+        unknown = set(d) - set(cls.FIELDS) - set(cls.DERIVED)
         if unknown:
             raise DealError("unknown deal fields: %s" % ", ".join(sorted(unknown)))
         missing = [k for k in ("asker", "answerer", "amount_raw", "acceptance") if k not in d]
@@ -153,6 +158,13 @@ class Deal:
                    d.get("deadline"), d.get("what_it_buys"))
         if "deal_id" in d and d["deal_id"] != deal.deal_id:
             raise DealError("deal_id does not match the terms")
+        if "pay_to" in d:
+            try:
+                pay_to = normalize_address(d["pay_to"])
+            except AddressError as e:
+                raise DealError("bad pay_to address: %s" % e)
+            if pay_to != deal.answerer:
+                raise DealError("pay_to is not the answerer")
         return deal
 
     def to_dict(self):
