@@ -98,6 +98,23 @@ class DealSchema(unittest.TestCase):
         with self.assertRaises(DealError):
             Deal.from_dict(dict(deal().to_dict(), deal_id="0" * 64))
 
+    def test_402_terms_round_trip(self):
+        """The 402 body is the one description of a deal a payer is handed; it must parse back.
+
+        `terms()` adds `deal_id`, `amount_xno` and `pay_to`. `from_dict` allowed the first two and
+        refused `pay_to` as an unknown field, so a payer that read the terms off a 402 and called
+        `Deal.from_dict(terms)` - to recompute the deal_id before paying - got
+        `unknown deal fields: pay_to`.
+        """
+        d = deal()
+        back = Deal.from_dict(d.terms())
+        self.assertEqual(back.deal_id, d.deal_id)
+        self.assertEqual(back.to_dict(), d.to_dict())
+        with self.assertRaises(DealError):            # a pay_to that is not the answerer
+            Deal.from_dict(dict(d.terms(), pay_to=OTHER))
+        with self.assertRaises(DealError):            # and one that is not an address
+            Deal.from_dict(dict(d.terms(), pay_to="nano_1111"))
+
     def test_amount_and_deadline_need_ascii_digits(self):
         """Unicode digits are not raw. `str.isdigit()` is true for every string below.
 

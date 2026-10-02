@@ -12,6 +12,10 @@ A deal is a JSON object. Unknown fields are refused, so a typo can never silentl
 | `what_it_buys` | no | string | Plain words for what the asker is paying for. Same name and meaning as the field in bounded task specs, so a bounded task can be passed through unchanged where the fields overlap. |
 | `deal_id` | no | string | If given, must equal the computed id (below); otherwise the deal is refused. |
 | `amount_xno` | no | string | Accepted on input and ignored (it appears in 402 terms for humans). `amount_raw` is the only amount that counts. |
+| `pay_to` | no | string | Accepted on input; if given, must be the `answerer` (it appears in 402 terms as the address to pay). |
+
+The last three are **derived**, not terms: `terms()` adds them to a 402 body, and `from_dict` takes that
+body back unchanged, so a payer can recompute the deal id from exactly what it was handed.
 
 `deal_id` = sha256 of the canonical JSON (sorted keys, no whitespace) of
 `{asker, answerer, amount_raw, acceptance, deadline, what_it_buys?}` after addresses are normalised to `nano_`
