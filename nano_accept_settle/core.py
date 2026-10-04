@@ -274,12 +274,38 @@ class Rpc:
             raise RpcError("rpc answered non-JSON")
 
 
+def _rpc_error_detail(info):
+    """The node's refusal in full: its `error`, plus the `code` and `message` it adds.
+
+    `DEFAULT_RPC` answers a request it will not serve with
+    `{"error": 429, "code": "api_key_required_for_heavy_usage", "message": "Free public RPC
+    limit reached. ..."}`. Reporting only `error` turns that into "rpc error: 429", which
+    tells the reader neither that a key is wanted nor that nothing is wrong with their
+    block, so the 503 receipt is a dead end. The extra fields are optional and only
+    appended when the node sends them, so a plain `{"error": "Block not found"}` reads
+    exactly as it did.
+    """
+    detail = str(info["error"])
+    code = info.get("code")
+    if code and str(code) != detail:
+        detail += " (%s)" % code
+    message = info.get("message")
+    if isinstance(message, str) and message:
+        detail += ": " + message
+    return detail
+
+
 def _block_info(rpc, block_hash):
     info = rpc({"action": "block_info", "json_block": "true", "hash": block_hash})
     if not isinstance(info, dict):
         raise RpcError("rpc answered a non-object")
     if "error" in info:
-        raise RpcError("rpc error: %s" % info["error"])
+        # Name the node when there is one to name: a reader with a custom `rpc=` needs to
+        # know which endpoint refused, and the default is shared by every tool here.
+        url = getattr(rpc, "url", None)
+        if isinstance(url, str) and url:
+            raise RpcError("rpc error from %s: %s" % (url, _rpc_error_detail(info)))
+        raise RpcError("rpc error: %s" % _rpc_error_detail(info))
     return info
 
 

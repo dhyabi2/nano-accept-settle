@@ -60,6 +60,22 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
   different deals; share one ledger (one database file, or one HTTP service) per marketplace.
 - `deadline` is informational (`on_time` uses the node's `local_timestamp`, which some nodes report as 0 for old
   blocks, giving `on_time: null`).
+- **The default node can refuse you outright, and then every call is a 503.** `https://rpc.nano.to` answers some
+  callers - a cloud container among them - with `429 api_key_required_for_heavy_usage` / "Free public RPC limit
+  reached", **at `usage: 0/10000`**: it is the address being refused, not your usage. Measured 2026-10-04 from a
+  cloud session; the same request from a residential address was served on 2026-10-03. Nothing is wrong with your
+  block and nothing is recorded - a 503 says retry - but it will not clear by retrying from the same place. The
+  receipt names the node and repeats its message, so you can tell this apart from a bad hash. Point somewhere
+  else:
+
+  ```python
+  from nano_accept_settle import Rpc, accept_and_settle
+  accept_and_settle(deal, deliverable, block_hash, rpc=Rpc("https://your-node.example/rpc"))
+  # or the same provider with a key:  Rpc("https://rpc.nano.to/?key=YOUR_KEY")
+  ```
+
+  The HTTP server takes `--rpc <url>` for the same reason. A node you run needs no key and is the advice above
+  for high value anyway.
 
 ## Tests
 
@@ -67,5 +83,10 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
 python3 -m unittest discover -s tests -v          # offline laws + one read-only live check
 NANO_ACCEPT_SETTLE_OFFLINE=1 python3 -m unittest discover -s tests   # offline only
 ```
+
+The live check reads one historical block from `https://rpc.nano.to`. If that node refuses your address (see the
+last point under **Limits**) it fails with `rpc error from https://rpc.nano.to: 429
+(api_key_required_for_heavy_usage)` and the offline run is the one to trust. CI runs offline only, and asserts
+that it really skipped the live check.
 
 MIT licensed.
