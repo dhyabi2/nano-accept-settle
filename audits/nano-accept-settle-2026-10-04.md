@@ -75,6 +75,12 @@ names neither the node that refused nor the fact that a key is wanted. The node 
   them, and `_block_info` names the endpoint when the client has a `url`. A plain
   `{"error": "Block not found"}` from a bare callable still reads exactly as before — two
   control tests hold that both ways.
+- **The endpoint is named without its credentials.** Writing the README advice
+  (`Rpc("https://rpc.nano.to/?key=YOUR_KEY")`) and then printing `rpc.url` into a failure
+  reason would have put the reader's API key in a receipt that `nano_accept_settle.http`
+  returns over HTTP and somebody logs. `_safe_endpoint` keeps `scheme://host[:port]/path`
+  and drops the query, the fragment and any `user:password@`. A test covers all three
+  shapes, and naming the url verbatim — the first draft of this change — fails it.
 - The README's **Limits** gains the measured refusal, that `usage: 0/10000` means the
   address and not the quota, that retrying from the same place will not clear it, and the
   two-line way to point `Rpc` at another node or at a keyed URL. The **Tests** section says

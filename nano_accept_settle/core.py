@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import threading
+import urllib.parse
 import urllib.request
 
 from .nano import AddressError, normalize_address, pubkey_to_address, state_block_hash
@@ -295,16 +296,40 @@ def _rpc_error_detail(info):
     return detail
 
 
+def _safe_endpoint(url):
+    """`scheme://host/path` and nothing else, for naming a node in an error message.
+
+    An RPC URL is where credentials live: `rpc.nano.to` takes `?key=...`, and a private node
+    may carry `https://user:password@host/`. A receipt's `reasons` are returned over HTTP by
+    `nano_accept_settle.http` and land in whatever log reads them, so the query string, the
+    fragment and any userinfo are dropped rather than printed. The host and path are what a
+    reader needs to tell one endpoint from another; the key is not.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname:
+        return None
+    host = parts.hostname
+    if parts.port:
+        host += ":%d" % parts.port
+    return "%s://%s%s" % (parts.scheme, host, parts.path)
+
+
 def _block_info(rpc, block_hash):
     info = rpc({"action": "block_info", "json_block": "true", "hash": block_hash})
     if not isinstance(info, dict):
         raise RpcError("rpc answered a non-object")
     if "error" in info:
         # Name the node when there is one to name: a reader with a custom `rpc=` needs to
-        # know which endpoint refused, and the default is shared by every tool here.
-        url = getattr(rpc, "url", None)
-        if isinstance(url, str) and url:
-            raise RpcError("rpc error from %s: %s" % (url, _rpc_error_detail(info)))
+        # know which endpoint refused, and the default is shared by every tool here. Named
+        # without its credentials - see `_safe_endpoint`.
+        endpoint = _safe_endpoint(getattr(rpc, "url", None))
+        if endpoint:
+            raise RpcError("rpc error from %s: %s" % (endpoint, _rpc_error_detail(info)))
         raise RpcError("rpc error: %s" % _rpc_error_detail(info))
     return info
 
