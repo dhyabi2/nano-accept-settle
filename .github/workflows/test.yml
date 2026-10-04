@@ -1,0 +1,86 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject.toml declares requires-python = ">=3.8", so every version it admits is
+        # run and no floor is left as a claim. 3.8 is absent from actions/setup-python's
+        # manifest for ubuntu-24.04, which ubuntu-latest now is, so that one leg pins 22.04.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        include:
+          - python-version: "3.8"
+            os: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: every module compiles on this interpreter
+        run: python -m compileall -q nano_accept_settle tests
+      - name: offline suite
+        run: |
+          set -o pipefail
+          NANO_ACCEPT_SETTLE_OFFLINE=1 python -m unittest discover -s tests -v 2>&1 | tee suite.log
+      - name: the live ledger check really was skipped
+        # Without this the suite would still read OK if NANO_ACCEPT_SETTLE_OFFLINE stopped
+        # being read - and CI would quietly start calling a public Nano node on every push,
+        # which is a network dependency in a test run and someone else's rate limit.
+        run: |
+          grep -qE 'OK \(skipped=1\)' suite.log || {
+            echo "::error::offline mode did not skip exactly one test; NANO_ACCEPT_SETTLE_OFFLINE may no longer be read, which would point CI at the public ledger"
+            exit 1
+          }
+
+  installed:
+    name: installed wheel (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the range ubuntu-latest can provide: the suite above runs from the
+        # source tree, so only this job can see a wheel that is built or shipped wrongly.
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: build the wheel in its own venv
+        # Built in a venv rather than with the interpreter's own pip: an `--upgrade pip` against
+        # a system or distro-managed interpreter is refused (PEP 668) or cannot uninstall the
+        # packaged pip, neither of which is anything to do with this project.
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/buildenv
+          /tmp/buildenv/bin/python -m pip install --quiet --upgrade pip build
+          /tmp/buildenv/bin/python -m build --wheel
+      - name: install it and exercise it from outside the checkout
+        # `[tool.setuptools] packages` names the package by hand, so a module that is not
+        # shipped still imports inside the checkout. Running from a temporary directory is
+        # what makes the import come from the install.
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/wheelvenv
+          /tmp/wheelvenv/bin/pip install --quiet dist/*.whl
+          work="$(mktemp -d)"
+          cp .github/installed_check.py "$work/"
+          cd "$work"
+          /tmp/wheelvenv/bin/python installed_check.py
