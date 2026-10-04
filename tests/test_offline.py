@@ -249,8 +249,66 @@ class Payment(unittest.TestCase):
         self.assertTrue(any("do not hash" in x for x in r["reasons"]))
 
     def test_unknown_block_and_bad_hash(self):
-        self.assertEqual(self.settle("A" * 64)["status"], 503)
+        r = self.settle("A" * 64)
+        self.assertEqual(r["status"], 503)
+        # A node with nothing to add still reads exactly as it always did.
+        self.assertIn("rpc error: Block not found", r["reasons"])
         self.assertEqual(self.settle("xyz")["status"], 402)
+
+    def test_a_node_that_wants_an_api_key_says_so_in_the_receipt(self):
+        """DEFAULT_RPC refuses some callers outright - measured 2026-10-04, at usage 0/10000:
+
+            {"error": 429, "code": "api_key_required_for_heavy_usage",
+             "message": "Free public RPC limit reached. Create an API key and upgrade ..."}
+
+        A 503 whose only reason is "rpc error: 429" sends the reader looking at their own
+        block. The code and the message are the node's, and both belong in the receipt.
+        """
+        class KeyWanted:
+            url = "https://rpc.example.invalid"
+
+            def __call__(self, payload):
+                return {"error": 429, "code": "api_key_required_for_heavy_usage",
+                        "message": "Free public RPC limit reached. Create an API key and upgrade.",
+                        "usage": "0/10000"}
+
+        r = accept_and_settle(deal(), "42", "A" * 64, rpc=KeyWanted(), ledger=self.ledger)
+        self.assertEqual(r["status"], 503)
+        reason = "\n".join(r["reasons"])
+        self.assertIn("429", reason)
+        self.assertIn("api_key_required_for_heavy_usage", reason)
+        self.assertIn("Create an API key", reason)
+        self.assertIn("https://rpc.example.invalid", reason)   # which node refused
+        self.assertIsNone(self.ledger.owner("A" * 64))         # and nothing was recorded
+
+    def test_the_node_is_named_without_its_credentials(self):
+        """The README tells you to point Rpc at `https://rpc.nano.to/?key=YOUR_KEY`, and a
+        receipt's reasons are returned over HTTP by nano_accept_settle.http and land in
+        somebody's log. So the key, and any userinfo, must not be in the message that names
+        the node that refused.
+        """
+        for url, want, must_not in (
+            ("https://rpc.nano.to/?key=SECRETKEY123", "https://rpc.nano.to/", "SECRETKEY123"),
+            ("https://u:pw@node.example/rpc", "https://node.example/rpc", "pw@"),
+            ("https://node.example:7076/rpc#frag", "https://node.example:7076/rpc", "frag"),
+        ):
+            class Refuses:
+                pass
+            Refuses.url = url
+            Refuses.__call__ = lambda self, payload: {"error": "Block not found"}
+            r = accept_and_settle(deal(), "42", "A" * 64, rpc=Refuses(), ledger=self.ledger)
+            reason = "\n".join(r["reasons"])
+            self.assertEqual(r["status"], 503)
+            self.assertIn("rpc error from %s: Block not found" % want, reason)
+            self.assertNotIn(must_not, reason)
+
+    def test_the_node_is_named_only_when_there_is_a_name(self):
+        """A bare callable `rpc=` has no url, and its message must not grow a stray "from None"."""
+        r = accept_and_settle(deal(), "42", "A" * 64, rpc=lambda p: {"error": "Block not found"},
+                              ledger=self.ledger)
+        self.assertEqual(r["status"], 503)
+        self.assertIn("rpc error: Block not found", r["reasons"])
+        self.assertNotIn("from", "\n".join(r["reasons"]))
 
     def test_verify_payment_does_not_record(self):
         h = self.rpc.chain_send(ASKER, ANSWERER, PRICE)
