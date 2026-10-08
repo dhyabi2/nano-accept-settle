@@ -248,6 +248,75 @@ class Payment(unittest.TestCase):
         self.assertEqual(r["status"], 503)
         self.assertTrue(any("do not hash" in x for x in r["reasons"]))
 
+    def test_a_previous_block_that_does_not_hash_is_refused(self):
+        """The amount is `previous.balance - balance`, so the PREVIOUS block has to be
+        verified too, and `read_send` hash-checks it the same way as the requested one.
+
+        Nothing held that guard: deleting
+        `state_block_hash(pc) != c["previous"].upper()` from `read_send` left the whole
+        suite green, while `test_rpc_that_lies_about_contents_is_refused` covers only
+        the requested block. README.md makes it a promise in as many words -- "the
+        amount is the balance drop from the (also hash-checked) previous block".
+        """
+        h = self.rpc.chain_send(ASKER, ANSWERER, PRICE)
+        previous = self.rpc.blocks[h]["contents"]["previous"]
+        elsewhere = self.rpc.add(ASKER, "0" * 64, 7 * RAW_PER_XNO, "AB" * 32)
+        self.rpc.blocks[previous] = self.rpc.blocks[elsewhere]   # a real block, wrong hash
+        r = self.settle(h)
+        self.assertEqual(r["status"], 503)
+        self.assertTrue(any("previous block could not be verified" in x for x in r["reasons"]),
+                        r["reasons"])
+        self.assertIsNone(self.ledger.owner(h), "an unverified payment is never recorded")
+
+    def test_a_forged_previous_balance_cannot_inflate_the_amount(self):
+        """What that guard is actually worth: without it the node sets the price.
+
+        The send below really moves ONE RAW. Its `previous` is served with a balance
+        high enough that `previous.balance - balance` comes out as the deal's full
+        0.01 XNO, and every other check passes -- a confirmed send from the asker to
+        the answerer. The hash check on `previous` is the only thing between that and
+        a 200, so this test pins what a 200 is allowed to mean.
+        """
+        start = 10 * RAW_PER_XNO
+        opened = self.rpc.add(ASKER, "0" * 64, start, "AB" * 32)
+        h = self.rpc.add(ASKER, opened, start - 1, address_to_pubkey(ANSWERER).hex().upper())
+        inflated = self.rpc.add(ASKER, "0" * 64, start - 1 + int(PRICE), "AB" * 32)
+        self.rpc.blocks[opened] = self.rpc.blocks[inflated]
+        r = self.settle(h)
+        self.assertNotEqual(r["status"], 200,
+                            "a one-raw send was accepted as %s raw because the node said so" % PRICE)
+        self.assertFalse(r["paid"])
+        self.assertEqual(r["status"], 503)
+        self.assertIsNone(self.ledger.owner(h))
+
+    def test_a_block_that_settled_another_deal_is_refused_before_the_rpc_is_read(self):
+        """`verify_payment`'s reuse pre-check is a second guard, not a duplicate.
+
+        `accept_and_settle` also catches reuse at `ledger.claim`, which is why replacing
+        the pre-check with `if False:` left the suite green. The two are not the same:
+        `claim` is only reached when the payment verifies, so without the pre-check a
+        block that already settled another deal reads as 503 while the node is
+        unreachable, or 402 while the block is unconfirmed, instead of 409. The
+        pre-check also answers without spending an RPC call on a block whose answer is
+        already known.
+        """
+        h = self.rpc.chain_send(ASKER, ANSWERER, PRICE)
+        self.assertEqual(self.settle(h)["status"], 200)
+        other = deal(what_it_buys="a different task")
+
+        calls_before = self.rpc.calls
+        r = self.settle(h, other)
+        self.assertEqual((r["status"], r["paid"]), (409, False))
+        self.assertEqual(self.rpc.calls, calls_before,
+                         "read the ledger node for a block whose owner was already known")
+
+        # And it holds when the payment itself could not be verified, which is the case
+        # `ledger.claim` never sees.
+        dead = MockRpc()
+        r = accept_and_settle(other, "42", h, rpc=dead, ledger=self.ledger)
+        self.assertEqual(r["status"], 409, "an unreadable node turned a 409 into a retry")
+        self.assertEqual(dead.calls, 0)
+
     def test_unknown_block_and_bad_hash(self):
         r = self.settle("A" * 64)
         self.assertEqual(r["status"], 503)
