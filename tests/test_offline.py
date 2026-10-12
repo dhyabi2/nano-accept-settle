@@ -23,6 +23,7 @@ def addr(seed):
 
 
 ASKER, ANSWERER, OTHER, REP = addr("asker"), addr("answerer"), addr("other"), addr("rep")
+WHALE = addr("whale")  # a stranger with a large balance, used as a forged `previous`
 PRICE = str(RAW_PER_XNO // 100)  # 0.01 XNO
 
 
@@ -287,6 +288,44 @@ class Payment(unittest.TestCase):
                             "a one-raw send was accepted as %s raw because the node said so" % PRICE)
         self.assertFalse(r["paid"])
         self.assertEqual(r["status"], 503)
+        self.assertIsNone(self.ledger.owner(h))
+
+    def test_a_previous_block_from_another_account_is_refused(self):
+        """`previous` is the account's OWN head, and hash-checking it is only half the guard.
+
+        The block below is served under its real hash, so
+        `state_block_hash(pc) != c["previous"].upper()` is satisfied -- it is a genuine
+        block. It just belongs to someone else. Nothing checked that until this guard:
+        deleting `normalize_address(pc["account"]) != normalize_address(c["account"])`
+        from `read_send` leaves the rest of the suite green.
+        """
+        whale_head = self.rpc.add(WHALE, "0" * 64, 1000 * RAW_PER_XNO, "AB" * 32)
+        h = self.rpc.add(ASKER, whale_head, 1000 * RAW_PER_XNO - int(PRICE),
+                         address_to_pubkey(ANSWERER).hex().upper())
+        r = self.settle(h)
+        self.assertEqual(r["status"], 503)
+        self.assertTrue(any("previous block belongs to another account" in x for x in r["reasons"]),
+                        r["reasons"])
+        self.assertIsNone(self.ledger.owner(h), "an unverified payment is never recorded")
+
+    def test_a_strangers_balance_named_as_previous_cannot_inflate_the_amount(self):
+        """What that guard is worth, and why the hash check alone is not enough.
+
+        The 10-08 guard stops a node serving a real block under the WRONG hash. It does
+        not stop a node naming a real block under its RIGHT hash: any high-balance
+        account on the public ledger will do, and no forgery is involved, so the hash
+        check costs the node nothing to satisfy. The send below moves nothing of the
+        asker's at all -- the asker's chain is not even consulted -- yet
+        `prev_balance - balance` comes out as the deal's full 0.01 XNO, from an account
+        the asker does not control, with every other check passing.
+        """
+        whale_head = self.rpc.add(WHALE, "0" * 64, 1000 * RAW_PER_XNO, "AB" * 32)
+        h = self.rpc.add(ASKER, whale_head, 1000 * RAW_PER_XNO - int(PRICE),
+                         address_to_pubkey(ANSWERER).hex().upper())
+        r = self.settle(h)
+        self.assertNotEqual(r["status"], 200,
+                            "a stranger's balance was accepted as %s raw of the asker's money" % PRICE)
+        self.assertFalse(r["paid"])
         self.assertIsNone(self.ledger.owner(h))
 
     def test_a_block_that_settled_another_deal_is_refused_before_the_rpc_is_read(self):

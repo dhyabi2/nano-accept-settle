@@ -354,6 +354,13 @@ def read_send(block_hash, rpc):
         pc = prev.get("contents")
         if not isinstance(pc, dict) or pc.get("type") != "state" or state_block_hash(pc) != c["previous"].upper():
             raise RpcError("previous block could not be verified")
+        # A block's `previous` is the account's OWN head, so the hash check above is only half
+        # the guard. Without this line a node can name any genuine high-balance block on the
+        # ledger as `previous` - it hashes correctly, because it is a real block under its real
+        # hash - and `prev_balance - balance` becomes whatever that stranger's balance makes it.
+        # No forgery is needed, so the hash check alone stops nothing.
+        if normalize_address(pc["account"]) != normalize_address(c["account"]):
+            raise RpcError("previous block belongs to another account")
         prev_balance = int(pc["balance"])
     delta = prev_balance - balance
     return {
