@@ -358,7 +358,9 @@ def read_send(block_hash, rpc):
         # the guard. Without this line a node can name any genuine high-balance block on the
         # ledger as `previous` - it hashes correctly, because it is a real block under its real
         # hash - and `prev_balance - balance` becomes whatever that stranger's balance makes it.
-        # No forgery is needed, so the hash check alone stops nothing.
+        # No forgery is needed for that. A node that fabricates blocks is a different matter:
+        # signatures are not verified, so this line does not take the node out of the trust
+        # boundary - it only stops it reusing a stranger's real block.
         if normalize_address(pc["account"]) != normalize_address(c["account"]):
             raise RpcError("previous block belongs to another account")
         prev_balance = int(pc["balance"])

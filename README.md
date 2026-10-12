@@ -36,7 +36,8 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
   that has not settled another deal. It does not take the node's word for the block: the state-block hash is
   recomputed from the returned fields, and the amount is the balance drop from the previous
   block, which is itself hash-checked **and required to belong to the same account** (a node that names a
-  stranger's high-balance block as `previous` would otherwise set the price). The node's `amount` must agree in the live test.
+  stranger's real high-balance block as `previous` would otherwise set the price; a node that fabricates blocks
+  is still trusted, because signatures are not verified - see below). The node's `amount` must agree in the live test.
 - `accept_and_settle(deal, deliverable, block_hash, rpc=None, ledger=None)` — both, in one receipt with an HTTP
   status: **200** accepted and paid; **402** accepted but unpaid, with the deal terms and `pay_to`; **409** the
   block already settled another deal; **422** the acceptance test failed; **503** RPC unreadable, retry.
