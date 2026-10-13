@@ -29,7 +29,26 @@ and the deadline to unix seconds. Two parties who agree on the terms compute the
 {"type": "regex", "pattern": "^\\d+$", "flags": "i", "fullmatch": true}
 ```
 
-- `sha256`: the deliverable's bytes (text is UTF-8 encoded) must hash to exactly this value.
+- `sha256`: the deliverable's bytes must hash to exactly this value. **What "its bytes" means depends on
+  how the deliverable arrives, and the two are not interchangeable:**
+  - `bytes` are hashed as they are; a `str` is hashed as its UTF-8 encoding.
+  - anything else - a JSON object or array, which is what `{"deliverable": {...}}` becomes over
+    `nano_accept_settle.http` - has no bytes of its own by the time it is seen, so it is hashed as
+    **canonical JSON: sorted keys, `,` and `:` separators, no whitespace** - the same rule as `deal_id`
+    above.
+
+  So an answerer who hashes the JSON text they put on the wire and sends that same answer as an object
+  gets a mismatch, because the whitespace and key order they hashed are gone:
+
+  ```
+  on the wire, and hashed  : {"temp_c": 21, "city": "Muscat"}
+  what this hashes          : {"city":"Muscat","temp_c":21}
+  ```
+
+  That is a **422** - a correct answer refused, and an asker who does not pay for it. An answerer who
+  wants their own bytes hashed must send them as text, or as `deliverable_b64` over HTTP; an answerer
+  hashing a JSON value must hash it the canonical way. Both sides agreed the `sha256` before the work
+  started, so this is worth settling then, not at acceptance.
 - `required_keys`: the deliverable must be a JSON object containing every key in `required`; `types` optionally
   pins top-level key types (`string`, `number`, `integer`, `boolean`, `object`, `array`, `null`; a boolean is
   never a number). This is a deliberately small subset of JSON Schema, not a validator.

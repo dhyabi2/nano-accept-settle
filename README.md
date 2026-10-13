@@ -31,6 +31,11 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
 - `Deal(asker, answerer, amount_raw, acceptance, deadline=None, what_it_buys=None)` / `Deal.from_dict(d)` —
   the terms. Schema pinned in [SCHEMA.md](SCHEMA.md). Amounts are integer strings of raw; floats are refused.
 - `check_acceptance(deal, deliverable) -> {"passed", "reasons"}` — sha256, required JSON keys, or regex.
+  For `sha256`, **bytes and text are hashed as themselves, and any other value (a JSON object or array,
+  which is what a deliverable sent over HTTP as JSON becomes) is hashed as canonical JSON — sorted keys,
+  no whitespace**, the same rule as `deal_id`. Hashing the JSON text you put on the wire and then sending
+  that answer as an object is a mismatch, and a mismatch is a 422 on a correct answer; send the bytes you
+  hashed as text or `deliverable_b64` instead. See [SCHEMA.md](SCHEMA.md).
 - `verify_payment(deal, block_hash, rpc=None, ledger=None)` — reads `block_info` (default `https://rpc.nano.to`,
   with a User-Agent) and requires a **confirmed send from the asker to the answerer of exactly `amount_raw`**
   that has not settled another deal. It does not take the node's word for the block: the state-block hash is
@@ -62,6 +67,25 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
   different deals; share one ledger (one database file, or one HTTP service) per marketplace.
 - `deadline` is informational (`on_time` uses the node's `local_timestamp`, which some nodes report as 0 for old
   blocks, giving `on_time: null`).
+- **A `regex` acceptance runs the asker's pattern, and a pattern can be made expensive.** Python's `re`
+  backtracks, so a nested quantifier against a non-matching string costs exponential time. Measured here,
+  `{"type": "regex", "pattern": "^(a+)+$", "fullmatch": true}`:
+
+  ```
+  18 a's + b ->   0.011 s
+  22 a's + b ->   0.219 s
+  26 a's + b ->   3.035 s
+  28 a's + b ->  12.831 s
+  30 a's + b ->  53.194 s
+  ```
+
+  Doubling per character, under both caps (512-character pattern, 1 MB deliverable). It does not stall the
+  process — other threads keep running normally while one burns CPU (measured: 2000 benign verifications in
+  0.003 s alongside the 53-second match) — but it does mean **one `POST /accept-and-settle` can occupy a
+  core for as long as its author likes**, and the shared HTTP verifier this page recommends for a
+  marketplace takes its deals from whoever is asking. If you expose it, put a request timeout and a
+  concurrency limit in front of it, and prefer `sha256` or `required_keys` for deals from strangers: both
+  are linear in the deliverable and cannot be made to backtrack.
 - **The default node can refuse you outright, and then every call is a 503.** `https://rpc.nano.to` answers some
   callers - a cloud container among them - with `429 api_key_required_for_heavy_usage` / "Free public RPC limit
   reached", **at `usage: 0/10000`**: it is the address being refused, not your usage. Measured 2026-10-04 from a

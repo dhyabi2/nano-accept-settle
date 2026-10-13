@@ -66,6 +66,43 @@ class Acceptance(unittest.TestCase):
         self.assertTrue(check_acceptance(d, b"hello")["passed"])
         self.assertFalse(check_acceptance(d, b"hellO")["passed"])
 
+    def test_a_json_deliverable_is_hashed_as_canonical_json_not_as_the_text_it_arrived_in(self):
+        """A `sha256` deal over a JSON answer hashes CANONICAL JSON: sorted keys, no whitespace.
+
+        SCHEMA.md used to say only "the deliverable's bytes (text is UTF-8 encoded)". A JSON object has
+        no bytes of its own by the time `check_acceptance` sees it -- `{"deliverable": {...}}` over
+        `nano_accept_settle.http` arrives already parsed -- so `_as_bytes` invents them, with the same
+        rule `deal_id` uses. An answerer who hashed the JSON TEXT they put on the wire and sent that
+        answer as an object therefore got `passed: False`, which is a 422 on a correct answer and an
+        asker who does not pay for it:
+
+            on the wire, and hashed : {"temp_c": 21, "city": "Muscat"}
+            what this hashes        : {"city":"Muscat","temp_c":21}
+
+        Pinned here in both directions, because the canonical form is now a documented promise to two
+        strangers who agreed a hash before the work started: changing it would break every live
+        `sha256` deal, and an answerer cannot re-derive it from the mismatch.
+        """
+        answer = {"temp_c": 21, "city": "Muscat"}
+        canonical = json.dumps(answer, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(canonical, b'{"city":"Muscat","temp_c":21}')
+        d = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(canonical).hexdigest()})
+        # The object, and the canonical bytes themselves, are the same deliverable.
+        self.assertTrue(check_acceptance(d, answer)["passed"])
+        self.assertTrue(check_acceptance(d, canonical)["passed"])
+        self.assertTrue(check_acceptance(d, canonical.decode())["passed"])
+        # Key order does not matter: it is sorted before hashing.
+        self.assertTrue(check_acceptance(d, {"city": "Muscat", "temp_c": 21})["passed"])
+
+        # And the trap the docs now explain: hashing the wire text, delivering the object.
+        wire = json.dumps(answer).encode()
+        self.assertNotEqual(wire, canonical)
+        theirs = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(wire).hexdigest()})
+        self.assertFalse(check_acceptance(theirs, answer)["passed"],
+                         "an object is hashed canonically, never as the text it was written in")
+        # The way out, which is what an answerer must be told: send the bytes you hashed.
+        self.assertTrue(check_acceptance(theirs, wire)["passed"])
+
     def test_required_keys_and_types(self):
         d = deal(acceptance={"type": "required_keys", "required": ["price", "unit"], "types": {"price": "number"}})
         self.assertTrue(check_acceptance(d, '{"price": 3.2, "unit": "XNO"}')["passed"])
