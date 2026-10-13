@@ -41,6 +41,11 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
 - `accept_and_settle(deal, deliverable, block_hash, rpc=None, ledger=None)` — both, in one receipt with an HTTP
   status: **200** accepted and paid; **402** accepted but unpaid, with the deal terms and `pay_to`; **409** the
   block already settled another deal; **422** the acceptance test failed; **503** RPC unreadable, retry.
+  A reply the node itself got wrong - a `balance` that is not a decimal integer, a field it left out, a `link`
+  that is not 32 bytes of hex - is a **503** like any other unreadable reply, never a 402: a 402 carries the
+  terms, so it would tell the payer their money has not arrived and hand them the amount to send again.
+  The one exception is `confirmed`, the field taken on the node's word: a reply that omits it, or sends anything
+  but `true`, reads as not yet confirmed - a **402** "block is not confirmed yet", as for any unsettled send.
 - `UsedHashLedger(path)` — local SQLite of block -> deal (default `~/.nano-accept-settle/used.db`, or
   `NANO_ACCEPT_SETTLE_DB`). A block is recorded only on a 200, atomically.
 - Optional HTTP: `python -m nano_accept_settle.http --port 8420` serves `POST /accept-and-settle` with

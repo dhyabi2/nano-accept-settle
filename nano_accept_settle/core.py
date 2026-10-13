@@ -271,7 +271,7 @@ class Rpc:
             raise RpcError("rpc request failed: %s" % e)
         try:
             return json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nesting too deep to parse
             raise RpcError("rpc answered non-JSON")
 
 
@@ -334,6 +334,52 @@ def _block_info(rpc, block_hash):
     return info
 
 
+def _state_hash(contents, which):
+    """`state_block_hash` of a block the node just served, with every malformed field
+    reported as a node error rather than as a verdict on the payment.
+
+    `state_block_hash` reads six fields out of the node's reply and raises whatever the
+    bad one happens to raise: `TypeError` for a `balance` of `null`, an object or an array
+    (`int()` refuses those by type), `KeyError` for a field the node left out, `ValueError`
+    for a `previous` or `link` that is not 32 bytes of hex, `AddressError` for an `account`
+    or `representative` that is not an address. `verify_payment` catches four of those five
+    and not `TypeError`, so a reply carrying `"balance": null` left `accept_and_settle` with
+    a traceback instead of a receipt, and dropped the connection without a reply in
+    `nano_accept_settle.http`. The four it did catch were no better placed: they are not
+    `RpcError`, so the receipt came back **402 with `terms`** - which tells the payer their
+    money has not arrived and hands them the amount to send again - for a block this code
+    never managed to read. Either way the node's mistake was charged to the payer.
+
+    A reply the node got wrong is a node error, exactly like the two already below it: 503,
+    "try again, nothing was recorded". No test of the payment itself moves - a reply that
+    hashes is hashed here as it was before, and a hash that does not match the requested
+    block is still refused by the caller, with the message it always had.
+
+    `OverflowError` belongs with them: `json.loads` reads `1e400` or `Infinity` as a float
+    infinity, and `int()` of that raises `OverflowError`, not `ValueError`.
+    """
+    try:
+        return state_block_hash(contents)
+    except (AddressError, KeyError, OverflowError, TypeError, ValueError) as e:
+        raise RpcError("%s block is malformed: %s" % (which, e or e.__class__.__name__))
+
+
+def _local_timestamp(value):
+    """The node's own clock reading, which only `on_time` uses.
+
+    `int(value or 0)` raised `TypeError` here too, for a non-empty list or object. Unlike a
+    balance this figure decides nothing about the money, and the README already tells the
+    reader it can be missing ("some nodes report 0 for old blocks, giving `on_time: null`"),
+    so a figure that cannot be read reads as absent instead of refusing a payment that is
+    otherwise fully verified. `1e400` or `Infinity` parse as a float infinity, which `int()`
+    refuses with `OverflowError`; that reads as absent too.
+    """
+    try:
+        return int(value or 0)
+    except (OverflowError, TypeError, ValueError):
+        return 0
+
+
 def read_send(block_hash, rpc):
     """Read a block and derive, without trusting the RPC's summary fields, who sent how much to whom.
 
@@ -344,7 +390,7 @@ def read_send(block_hash, rpc):
     c = info.get("contents")
     if not isinstance(c, dict) or c.get("type") != "state":
         raise RpcError("not a state block")
-    if state_block_hash(c) != block_hash.upper():
+    if _state_hash(c, "this") != block_hash.upper():
         raise RpcError("rpc returned contents that do not hash to the requested block")
     balance = int(c["balance"])
     if c["previous"] == "0" * 64:
@@ -352,7 +398,7 @@ def read_send(block_hash, rpc):
     else:
         prev = _block_info(rpc, c["previous"])
         pc = prev.get("contents")
-        if not isinstance(pc, dict) or pc.get("type") != "state" or state_block_hash(pc) != c["previous"].upper():
+        if not isinstance(pc, dict) or pc.get("type") != "state" or _state_hash(pc, "previous") != c["previous"].upper():
             raise RpcError("previous block could not be verified")
         # A block's `previous` is the account's OWN head, so the hash check above is only half
         # the guard. Without this line a node can name any genuine high-balance block on the
@@ -372,7 +418,7 @@ def read_send(block_hash, rpc):
         "amount_raw": str(delta) if delta > 0 else "0",
         "destination": pubkey_to_address(bytes.fromhex(c["link"])) if delta > 0 else None,
         "confirmed": str(info.get("confirmed")).lower() == "true",
-        "local_timestamp": int(info.get("local_timestamp") or 0),
+        "local_timestamp": _local_timestamp(info.get("local_timestamp")),
         "rpc_amount_raw": info.get("amount"),
         "rpc_subtype": info.get("subtype"),
     }
@@ -432,7 +478,7 @@ def verify_payment(deal, block_hash, rpc=None, ledger=None):
             return out
     try:
         blk = read_send(block_hash, rpc)
-    except (RpcError, KeyError, ValueError, AddressError) as e:
+    except (RpcError, KeyError, ValueError, OverflowError, AddressError) as e:
         out["rpc_error"] = isinstance(e, RpcError)
         out["reasons"].append(str(e) or e.__class__.__name__)
         return out
