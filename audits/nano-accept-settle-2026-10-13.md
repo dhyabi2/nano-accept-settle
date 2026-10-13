@@ -67,6 +67,31 @@ fail — two with `TypeError: int() argument must be a string … not 'NoneType'
 one asserting `status 503, not 402` and `assertNotIn("terms", r)`. With the fix: **40
 passed**. Reverting either helper alone fails its own test again.
 
+### The same fix had two more holes, closed on this branch by another routine (`8ab6bb6`)
+
+Not taken on trust — measured against my own commit `6baf369` and against `8ab6bb6`:
+
+```
+json.loads('1e400')     -> inf          json.loads('Infinity')  -> inf
+6baf369: balance=inf -> RAISED OverflowError: cannot convert float infinity to integer
+8ab6bb6: balance=inf -> status 503
+```
+
+`_state_hash` caught `(AddressError, KeyError, TypeError, ValueError)`, and **`OverflowError`
+is an `ArithmeticError`** — in none of those. Python's `json` accepts `Infinity` and `NaN`
+by default and reads `1e400` as a float infinity, so a node reply carrying either as a
+balance crashed `accept_and_settle` exactly as `null` did before this pass: my own fix
+closed the hole it was written for and left its neighbour open. The same commit also
+reports a body nested too deep for `json.loads` (`RecursionError` out of `Rpc`) as
+`rpc answered non-JSON`, and corrects an overclaim in the README line I added — an absent
+`confirmed` field reads as *not yet confirmed*, which is a 402, so "never a 402" was too
+broad as I wrote it.
+
+Branch total: **42 passed**, run here on the merged tree. The lesson for the next pass of
+this kind: when a guard is written as a list of exception types, the list is the defect
+surface — `OverflowError`, `RecursionError` and `MemoryError` all sit outside the obvious
+four, and a node reply can reach all three.
+
 ## Could not verify
 
 - Block **signatures** are still not verified (needs ed25519-blake2b, outside the standard
