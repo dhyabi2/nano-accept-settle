@@ -103,6 +103,30 @@ class Acceptance(unittest.TestCase):
         # The way out, which is what an answerer must be told: send the bytes you hashed.
         self.assertTrue(check_acceptance(theirs, wire)["passed"])
 
+    def test_canonical_json_is_ascii_escaped_and_floats_are_python_repr(self):
+        """Canonical JSON is exactly `json.dumps(v, sort_keys=True, separators=(",", ":"))`, which
+        also means ASCII-only output (`\\uXXXX` escapes, surrogate pairs above U+FFFF) and floats in
+        Python `repr`. An answerer hashing with `JSON.stringify`, RFC 8785 or `ensure_ascii=False`
+        writes raw UTF-8 instead and gets a different hash; SCHEMA.md says so, and this pins it."""
+        answer = {"name": "Zo\u00eb", "city": "\u0645\u0633\u0642\u0637", "e": "\U0001F600"}  # Zoe with a diaeresis, Muscat in Arabic, an emoji
+        escaped = (b'{"city":"\\u0645\\u0633\\u0642\\u0637","e":"\\ud83d\\ude00",'
+                   b'"name":"Zo\\u00eb"}')
+        raw_utf8 = json.dumps(answer, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        self.assertNotEqual(escaped, raw_utf8)
+        ok = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(escaped).hexdigest()})
+        self.assertTrue(check_acceptance(ok, answer)["passed"])
+        utf8 = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(raw_utf8).hexdigest()})
+        self.assertFalse(check_acceptance(utf8, answer)["passed"],
+                         "non-ASCII is hashed as \\uXXXX escapes, never as raw UTF-8")
+
+        # A number parsed from `1e2` is the float 100.0, and is hashed as Python writes it.
+        parsed = json.loads('{"n": 1e2}')
+        hundred_point_0 = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(b'{"n":100.0}').hexdigest()})
+        self.assertTrue(check_acceptance(hundred_point_0, parsed)["passed"])
+        for wrong in (b'{"n":1e2}', b'{"n":100}'):
+            d = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(wrong).hexdigest()})
+            self.assertFalse(check_acceptance(d, parsed)["passed"], wrong)
+
     def test_required_keys_and_types(self):
         d = deal(acceptance={"type": "required_keys", "required": ["price", "unit"], "types": {"price": "number"}})
         self.assertTrue(check_acceptance(d, '{"price": 3.2, "unit": "XNO"}')["passed"])

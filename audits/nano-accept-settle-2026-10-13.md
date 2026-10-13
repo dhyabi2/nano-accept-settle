@@ -22,7 +22,10 @@ Suite before anything: `NANO_ACCEPT_SETTLE_OFFLINE=1 python3 -m unittest discove
   `_RAW_RE`/`_UNIX_RE` as ASCII-only rather than `str.isdigit()`, unknown-field refusals per
   acceptance shape, `terms()`'s exact decimal `amount_xno`.
 - `http.py`'s request handling and the `deliverable_b64` path.
-- Every claim in README.md and SCHEMA.md against the code.
+- The README.md and SCHEMA.md claims touching the above against the code. Not exhaustive: review of
+  this audit found two of its own claims wrong (the canonical-JSON rule as first written omitted the
+  ASCII-only escaping and float form; the regex limit as first written said other threads keep running),
+  both corrected below.
 
 ## Found and fixed (documentation, with a test pinning the behaviour)
 
@@ -45,10 +48,15 @@ who does not pay for it. There is no way to recover their original spacing at ac
 the fix is the contract, not the code: both sides agree the `sha256` before the work starts, and
 the rule has to be knowable then.
 
-SCHEMA.md and README.md now state the rule per deliverable type, show the mismatch, and name the
-two ways out (send the bytes you hashed as text or `deliverable_b64`, or hash the canonical form).
+SCHEMA.md and README.md now state the rule per deliverable type, define canonical JSON exactly
+(Python's `json.dumps(value, sort_keys=True, separators=(",", ":"))`, which is ASCII-only with
+`\uXXXX` escapes and writes floats in `repr`, so `1e2` is hashed as `100.0`), show the mismatch,
+and name the two ways out (send the bytes you hashed as text or `deliverable_b64`, or hash the
+canonical form). A 422 records nothing (`accept_and_settle` returns before `verify_payment` and the
+ledger), so the same block hash can be resent that way.
 `test_a_json_deliverable_is_hashed_as_canonical_json_not_as_the_text_it_arrived_in` pins it in both
-directions. Suite after: **38 tests, OK (skipped=1)**.
+directions, and `test_canonical_json_is_ascii_escaped_and_floats_are_python_repr`
+pins the escaping and float form. Suite after: **39 tests, OK (skipped=1)**.
 
 **No code changed, so there is no failing-then-passing run for this.** The behaviour was always
 this; the document was wrong about it. The new test is what stops the document going wrong again:
@@ -67,10 +75,13 @@ the canonical form is now a promise to two strangers, and changing it would brea
     30 a's + b ->  53.194 s
 
 Doubling per character, well under both existing caps (512-character pattern, 1 MB deliverable).
-It does **not** stall the process - measured, 2000 benign verifications completed in 0.003 s
-alongside the 53-second match, so `re` yields - but one `POST /accept-and-settle` can occupy a core
-for as long as its author likes, and the shared HTTP verifier the README recommends for a
-marketplace takes its deals from whoever is asking.
+And it **stalls every thread in the process**: CPython's `re` holds the GIL for the whole match.
+Measured: a `sleep(0.05)` in another thread woke only when a 1.6 s match at 25 characters finished;
+over the `ThreadingHTTPServer` in `nano_accept_settle.http`, a benign request sent during that match
+waited 1.3 s for it. (An earlier draft of this audit said `re` yields and other threads keep
+running; that was wrong.) So one `POST /accept-and-settle` can freeze the shared HTTP verifier the
+README recommends for a marketplace for as long as its author likes, and that verifier takes its
+deals from whoever is asking.
 
 Not fixed in code, deliberately. Every option is worse than the limit: refusing nested quantifiers
 is a heuristic that both refuses legitimate patterns (`(\d+\.?)+`) and misses equivalent ones
@@ -79,9 +90,10 @@ help, since 30 characters is already a minute; and `re` has no timeout, with `si
 unavailable off the main thread, which is exactly where the threaded HTTP server runs it. A
 subprocess per match would close it and would also end this library's "standard library, no moving
 parts" character - that is a maintainer's decision, not a routine's. It is recorded under
-**Limits** with the measurement and the operational mitigation (a request timeout and a concurrency
-limit in front of an exposed verifier; `sha256` or `required_keys` for deals from strangers, both
-linear and unable to backtrack).
+**Limits** with the measurement and the operational mitigation (a per-request time limit on the
+regex check in a separate, killable process, or a pattern length/complexity limit plus a concurrency
+limit in front of an exposed verifier - a client-side timeout does not stop the match; `sha256` or
+`required_keys` for deals from strangers, both linear and unable to backtrack).
 
 ## Could not verify
 

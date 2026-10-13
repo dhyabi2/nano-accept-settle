@@ -32,10 +32,15 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
   the terms. Schema pinned in [SCHEMA.md](SCHEMA.md). Amounts are integer strings of raw; floats are refused.
 - `check_acceptance(deal, deliverable) -> {"passed", "reasons"}` — sha256, required JSON keys, or regex.
   For `sha256`, **bytes and text are hashed as themselves, and any other value (a JSON object or array,
-  which is what a deliverable sent over HTTP as JSON becomes) is hashed as canonical JSON — sorted keys,
-  no whitespace**, the same rule as `deal_id`. Hashing the JSON text you put on the wire and then sending
-  that answer as an object is a mismatch, and a mismatch is a 422 on a correct answer; send the bytes you
-  hashed as text or `deliverable_b64` instead. See [SCHEMA.md](SCHEMA.md).
+  which is what a deliverable sent over HTTP as JSON becomes, or a bare number, `true`, `false` or `null`) is
+  hashed as canonical JSON**, the same rule as `deal_id`: exactly Python's
+  `json.dumps(value, sort_keys=True, separators=(",", ":"))`. That is sorted keys and no whitespace, and also
+  ASCII-only - non-ASCII as `\uXXXX` escapes, surrogate pairs above U+FFFF (`"Zoë"` -> `"Zo\u00eb"`) - with
+  floats in Python's `repr` (`1e2` arrives as `100.0`, `1.10` as `1.1`) and the last of any duplicate key
+  kept. `JSON.stringify`, RFC 8785 and `ensure_ascii=False` give different bytes. Hashing the JSON text you
+  put on the wire and then sending that answer as an object is a mismatch, and a mismatch is a 422 on a
+  correct answer; if you need byte-exact control, send the bytes you hashed as text or `deliverable_b64`
+  instead. A 422 records nothing, so the same `block_hash` can be resent that way. See [SCHEMA.md](SCHEMA.md).
 - `verify_payment(deal, block_hash, rpc=None, ledger=None)` — reads `block_info` (default `https://rpc.nano.to`,
   with a User-Agent) and requires a **confirmed send from the asker to the answerer of exactly `amount_raw`**
   that has not settled another deal. It does not take the node's word for the block: the state-block hash is
@@ -79,13 +84,17 @@ Run it twice with a different `what_it_buys` and you get 409: one payment settle
   30 a's + b ->  53.194 s
   ```
 
-  Doubling per character, under both caps (512-character pattern, 1 MB deliverable). It does not stall the
-  process — other threads keep running normally while one burns CPU (measured: 2000 benign verifications in
-  0.003 s alongside the 53-second match) — but it does mean **one `POST /accept-and-settle` can occupy a
-  core for as long as its author likes**, and the shared HTTP verifier this page recommends for a
-  marketplace takes its deals from whoever is asking. If you expose it, put a request timeout and a
-  concurrency limit in front of it, and prefer `sha256` or `required_keys` for deals from strangers: both
-  are linear in the deliverable and cannot be made to backtrack.
+  Doubling per character, under both caps (512-character pattern, 1 MB deliverable). And it **stalls every
+  thread in the verifier process**, not just its own: CPython's `re` holds the GIL for the whole match, so
+  nothing else in the process runs until it finishes (measured: a `sleep(0.05)` in another thread woke only
+  when a 1.6 s match at 25 characters ended; over `nano_accept_settle.http`'s `ThreadingHTTPServer` a
+  benign request sent during that match waited 1.3 s for it). So **one `POST /accept-and-settle` can freeze
+  the shared HTTP verifier this page recommends for a marketplace for as long as its author likes**, and
+  that verifier takes its deals from whoever is asking. A timeout on the client or proxy does not stop the
+  match. If you expose it, run each regex check under a per-request time limit in a separate process (one
+  that can be killed), or refuse patterns over a length/complexity limit you choose and put a concurrency
+  limit in front; and prefer `sha256` or `required_keys` for deals from strangers: both are linear in the
+  deliverable and cannot be made to backtrack.
 - **The default node can refuse you outright, and then every call is a 503.** `https://rpc.nano.to` answers some
   callers - a cloud container among them - with `429 api_key_required_for_heavy_usage` / "Free public RPC limit
   reached", **at `usage: 0/10000`**: it is the address being refused, not your usage. Measured 2026-10-04 from a
