@@ -485,6 +485,68 @@ class Payment(unittest.TestCase):
             self.assertEqual(r["payment"]["local_timestamp"], 0)
             self.assertIsNone(r["payment"]["on_time"])
 
+    def test_an_infinite_figure_is_a_node_error_and_an_infinite_clock_reads_as_absent(self):
+        """`json.loads` reads `1e400` and `Infinity` as a float infinity, and `int()` of that
+        raises `OverflowError` - which none of the handlers above named. A `balance` like that,
+        on the block or on its previous block, is a reply the node got wrong: 503. A
+        `local_timestamp` like that is the node's clock, so a settled payment still settles.
+        """
+        for bad in ('1e400', 'Infinity', '-Infinity'):
+            inf = json.loads(bad)
+            h = self.rpc.chain_send(ASKER, ANSWERER, PRICE)
+            block = self.rpc.blocks[h]
+            previous = block["contents"]["previous"]
+            pblock = self.rpc.blocks[previous]
+
+            self.rpc.blocks[h] = dict(block, contents=dict(block["contents"], balance=inf))
+            r = self.settle(h)   # must not raise
+            self.assertEqual(r["status"], 503, "balance=%s came back as %s" % (bad, r["status"]))
+            self.assertNotIn("terms", r)
+            self.assertIsNone(self.ledger.owner(h))
+
+            self.rpc.blocks[h] = block
+            self.rpc.blocks[previous] = dict(pblock, contents=dict(pblock["contents"], balance=inf))
+            r = self.settle(h)
+            self.assertEqual(r["status"], 503, "previous balance=%s came back as %s" % (bad, r["status"]))
+            self.assertNotIn("terms", r)
+            self.assertIsNone(self.ledger.owner(h))
+
+            self.rpc.blocks[previous] = pblock
+            self.rpc.blocks[h] = dict(block, local_timestamp=inf)
+            led = UsedHashLedger(":memory:")
+            r = accept_and_settle(deal(), "42", h, rpc=self.rpc, ledger=led)
+            self.assertEqual((r["status"], r["paid"]), (200, True),
+                             "local_timestamp=%s lost a settled payment" % bad)
+            self.assertEqual(r["payment"]["local_timestamp"], 0)
+            self.assertIsNone(r["payment"]["on_time"])
+
+    def test_a_reply_nested_too_deep_to_parse_is_a_node_error(self):
+        """`json.loads` raises `RecursionError`, not `ValueError`, for a body nested deeper
+        than the parser will go, so it left `Rpc` uncaught instead of as "rpc answered non-JSON".
+        """
+        from unittest import mock
+        from nano_accept_settle.core import Rpc
+
+        class Reply:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return self.body[:n]
+
+        body = b"[" * 100000 + b"]" * 100000
+        with mock.patch("urllib.request.urlopen", lambda req, timeout=None: Reply(body)):
+            r = accept_and_settle(deal(), "42", "A" * 64, rpc=Rpc("http://127.0.0.1:9/"), ledger=self.ledger)
+        self.assertEqual(r["status"], 503)
+        self.assertIn("rpc answered non-JSON", r["reasons"])
+        self.assertNotIn("terms", r)
+
     def test_verify_payment_does_not_record(self):
         h = self.rpc.chain_send(ASKER, ANSWERER, PRICE)
         self.assertTrue(verify_payment(deal(), h, rpc=self.rpc, ledger=self.ledger)["paid"])

@@ -271,7 +271,7 @@ class Rpc:
             raise RpcError("rpc request failed: %s" % e)
         try:
             return json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nesting too deep to parse
             raise RpcError("rpc answered non-JSON")
 
 
@@ -354,10 +354,13 @@ def _state_hash(contents, which):
     "try again, nothing was recorded". No test of the payment itself moves - a reply that
     hashes is hashed here as it was before, and a hash that does not match the requested
     block is still refused by the caller, with the message it always had.
+
+    `OverflowError` belongs with them: `json.loads` reads `1e400` or `Infinity` as a float
+    infinity, and `int()` of that raises `OverflowError`, not `ValueError`.
     """
     try:
         return state_block_hash(contents)
-    except (AddressError, KeyError, TypeError, ValueError) as e:
+    except (AddressError, KeyError, OverflowError, TypeError, ValueError) as e:
         raise RpcError("%s block is malformed: %s" % (which, e or e.__class__.__name__))
 
 
@@ -368,11 +371,12 @@ def _local_timestamp(value):
     balance this figure decides nothing about the money, and the README already tells the
     reader it can be missing ("some nodes report 0 for old blocks, giving `on_time: null`"),
     so a figure that cannot be read reads as absent instead of refusing a payment that is
-    otherwise fully verified.
+    otherwise fully verified. `1e400` or `Infinity` parse as a float infinity, which `int()`
+    refuses with `OverflowError`; that reads as absent too.
     """
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return 0
 
 
@@ -474,7 +478,7 @@ def verify_payment(deal, block_hash, rpc=None, ledger=None):
             return out
     try:
         blk = read_send(block_hash, rpc)
-    except (RpcError, KeyError, ValueError, AddressError) as e:
+    except (RpcError, KeyError, ValueError, OverflowError, AddressError) as e:
         out["rpc_error"] = isinstance(e, RpcError)
         out["reasons"].append(str(e) or e.__class__.__name__)
         return out
