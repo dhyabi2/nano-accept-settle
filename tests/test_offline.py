@@ -66,6 +66,67 @@ class Acceptance(unittest.TestCase):
         self.assertTrue(check_acceptance(d, b"hello")["passed"])
         self.assertFalse(check_acceptance(d, b"hellO")["passed"])
 
+    def test_a_json_deliverable_is_hashed_as_canonical_json_not_as_the_text_it_arrived_in(self):
+        """A `sha256` deal over a JSON answer hashes CANONICAL JSON: sorted keys, no whitespace.
+
+        SCHEMA.md used to say only "the deliverable's bytes (text is UTF-8 encoded)". A JSON object has
+        no bytes of its own by the time `check_acceptance` sees it -- `{"deliverable": {...}}` over
+        `nano_accept_settle.http` arrives already parsed -- so `_as_bytes` invents them, with the same
+        rule `deal_id` uses. An answerer who hashed the JSON TEXT they put on the wire and sent that
+        answer as an object therefore got `passed: False`, which is a 422 on a correct answer and an
+        asker who does not pay for it:
+
+            on the wire, and hashed : {"temp_c": 21, "city": "Muscat"}
+            what this hashes        : {"city":"Muscat","temp_c":21}
+
+        Pinned here in both directions, because the canonical form is now a documented promise to two
+        strangers who agreed a hash before the work started: changing it would break every live
+        `sha256` deal, and an answerer cannot re-derive it from the mismatch.
+        """
+        answer = {"temp_c": 21, "city": "Muscat"}
+        canonical = json.dumps(answer, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(canonical, b'{"city":"Muscat","temp_c":21}')
+        d = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(canonical).hexdigest()})
+        # The object, and the canonical bytes themselves, are the same deliverable.
+        self.assertTrue(check_acceptance(d, answer)["passed"])
+        self.assertTrue(check_acceptance(d, canonical)["passed"])
+        self.assertTrue(check_acceptance(d, canonical.decode())["passed"])
+        # Key order does not matter: it is sorted before hashing.
+        self.assertTrue(check_acceptance(d, {"city": "Muscat", "temp_c": 21})["passed"])
+
+        # And the trap the docs now explain: hashing the wire text, delivering the object.
+        wire = json.dumps(answer).encode()
+        self.assertNotEqual(wire, canonical)
+        theirs = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(wire).hexdigest()})
+        self.assertFalse(check_acceptance(theirs, answer)["passed"],
+                         "an object is hashed canonically, never as the text it was written in")
+        # The way out, which is what an answerer must be told: send the bytes you hashed.
+        self.assertTrue(check_acceptance(theirs, wire)["passed"])
+
+    def test_canonical_json_is_ascii_escaped_and_floats_are_python_repr(self):
+        """Canonical JSON is exactly `json.dumps(v, sort_keys=True, separators=(",", ":"))`, which
+        also means ASCII-only output (`\\uXXXX` escapes, surrogate pairs above U+FFFF) and floats in
+        Python `repr`. An answerer hashing with `JSON.stringify`, RFC 8785 or `ensure_ascii=False`
+        writes raw UTF-8 instead and gets a different hash; SCHEMA.md says so, and this pins it."""
+        answer = {"name": "Zo\u00eb", "city": "\u0645\u0633\u0642\u0637", "e": "\U0001F600"}  # Zoe with a diaeresis, Muscat in Arabic, an emoji
+        escaped = (b'{"city":"\\u0645\\u0633\\u0642\\u0637","e":"\\ud83d\\ude00",'
+                   b'"name":"Zo\\u00eb"}')
+        raw_utf8 = json.dumps(answer, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        self.assertNotEqual(escaped, raw_utf8)
+        ok = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(escaped).hexdigest()})
+        self.assertTrue(check_acceptance(ok, answer)["passed"])
+        utf8 = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(raw_utf8).hexdigest()})
+        self.assertFalse(check_acceptance(utf8, answer)["passed"],
+                         "non-ASCII is hashed as \\uXXXX escapes, never as raw UTF-8")
+
+        # A number parsed from `1e2` is the float 100.0, and is hashed as Python writes it.
+        parsed = json.loads('{"n": 1e2}')
+        hundred_point_0 = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(b'{"n":100.0}').hexdigest()})
+        self.assertTrue(check_acceptance(hundred_point_0, parsed)["passed"])
+        for wrong in (b'{"n":1e2}', b'{"n":100}'):
+            d = deal(acceptance={"type": "sha256", "sha256": hashlib.sha256(wrong).hexdigest()})
+            self.assertFalse(check_acceptance(d, parsed)["passed"], wrong)
+
     def test_required_keys_and_types(self):
         d = deal(acceptance={"type": "required_keys", "required": ["price", "unit"], "types": {"price": "number"}})
         self.assertTrue(check_acceptance(d, '{"price": 3.2, "unit": "XNO"}')["passed"])
